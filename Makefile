@@ -50,6 +50,7 @@ LDFLAGS += -T stm32f429zi_flash.ld
 CFLAGS += -I.
 OBJS = \
     main.o \
+    usart.o \
     stm32f4xx_it.o \
     system_stm32f4xx.o
 

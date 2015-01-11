@@ -27,6 +27,7 @@
   */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usart.h"
 
 /** @addtogroup STM32F429I_DISCOVERY_Examples
   * @{
@@ -47,57 +48,80 @@ uint32_t uwSectorCounter = 0;
 
 __IO uint32_t uwData32 = 0;
 __IO uint32_t uwMemoryProgramStatus = 0;
-  
+
 /* Private function prototypes -----------------------------------------------*/
 /* Private functions ---------------------------------------------------------*/
 static uint32_t GetSector(uint32_t Address);
-
 /**
   * @brief   Main program
   * @param  None
   * @retval None
   */
-int main(void)
+
+void SetSysClockTo84(void)
 {
-  /*!< At this stage the microcontroller clock setting is already configured, 
-       this is done through SystemInit() function which is called from startup
-       files (startup_stm32f429_439xx.s) before to branch to application main. 
-       To reconfigure the default setting of SystemInit() function, refer to
-       system_stm32f4xx.c file
-     */
-     
-  /* Initialize LEDs onSTM32F429I-DISCO */
-  STM_EVAL_LEDInit(LED3);
-  STM_EVAL_LEDInit(LED4);
+  /* SYSCLK, HCLK, PCLK2 and PCLK1 configuration -----------------------------*/   
+  /* RCC system reset(for debug purpose) */
+  RCC_DeInit();
 
-  /* Unlock the Flash *********************************************************/
-  /* Enable the flash control register access */
-  FLASH_Unlock();
-    
-  /* Erase the user Flash area ************************************************/
-  /* area defined by FLASH_USER_START_ADDR and FLASH_USER_END_ADDR */
+  /* Enable HSE */
+  RCC_HSEConfig(RCC_HSE_ON);
 
-  /* Clear pending flags (if any) */  
-  FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
-                  FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR|FLASH_FLAG_PGSERR); 
+  /* Wait till HSE is ready */
+  ErrorStatus HSEStartUpStatus = RCC_WaitForHSEStartUp();
 
-  /* Get the number of the start and end sectors */
-  uwStartSector = GetSector(FLASH_USER_START_ADDR);
-  uwEndSector = GetSector(FLASH_USER_END_ADDR);
+  if (HSEStartUpStatus == SUCCESS)
+  {
+    /* Enable Prefetch Buffer */
+    FLASH_PrefetchBufferCmd(ENABLE);
 
+    /* Flash 2 wait state */
+    FLASH_SetLatency(FLASH_Latency_2);
+ 
+    /* PLL configuration */
+    RCC_PLLConfig(RCC_PLLSource_HSE, 6, 252, 4, 7);
+
+    /* Enable PLL */ 
+    RCC_PLLCmd(ENABLE);
+
+    /* Wait till PLL is ready */
+    while (RCC_GetFlagStatus(RCC_FLAG_PLLRDY) == RESET)
+    {
+    }
+
+    /* Select PLL as system clock source */
+    RCC_SYSCLKConfig(RCC_SYSCLKSource_PLLCLK);
+
+    /* Wait till PLL is used as system clock source */
+    while (RCC_GetSYSCLKSource() != 0x08)
+    {
+    }
+  }
+  else
+  { /* If HSE fails to start-up, the application will have wrong clock configuration.
+       User can add here some code to deal with this error */    
+
+    /* Go to infinite loop */
+    while (1)
+    {
+    }
+  }
+}
+
+void erase_data(uint32_t uwStartSector,uint32_t uwEndSector)
+{
+  uint32_t uwSectorCounter = uwStartSector;
   /* Strat the erase operation */
-  uwSectorCounter = uwStartSector;
+  
   while (uwSectorCounter <= uwEndSector) 
   {
     /* Device voltage range supposed to be [2.7V to 3.6V], the operation will
        be done by word */ 
     if (FLASH_EraseSector(uwSectorCounter, VoltageRange_3) != FLASH_COMPLETE)
     { 
+      USART1_puts("Erase error\r\n");
       /* Error occurred while sector erase. 
          User can add here some code to deal with this error  */
-      while (1)
-      {
-      }
     }
     /* jump to the next sector */
     if (uwSectorCounter == FLASH_Sector_11)
@@ -109,75 +133,111 @@ int main(void)
       uwSectorCounter += 8;
     }
   }
+}
 
-  /* Program the user Flash area word by word ********************************/
-  /* area defined by FLASH_USER_START_ADDR and FLASH_USER_END_ADDR */
-
-  uwAddress = FLASH_USER_START_ADDR;
-
-  while (uwAddress < FLASH_USER_END_ADDR)
+void program_data(uint32_t uwStartAddress, uint32_t uwEndAddress){
+  uint32_t uwAddress = uwStartAddress;
+  uint32_t program_error_count = 0;
+  while (uwAddress < uwEndAddress)
   {
-    if (FLASH_ProgramWord(uwAddress, DATA_32) == FLASH_COMPLETE)
-    {
-      uwAddress = uwAddress + 4;
-    }
-    else
-    { 
-      /* Error occurred while writing data in Flash memory. 
-         User can add here some code to deal with this error */
-      while (1)
-      {
-      }
-    }
+    if ( !FLASH_ProgramWord(uwAddress, DATA_32) == FLASH_COMPLETE)
+      program_error_count ++ ;
+    uwAddress = uwAddress + 4;
   }
+  if(program_error_count)
+    USART1_puts("Program error\r\n");
+}
 
-  /* Lock the Flash to disable the flash control register access (recommended
-     to protect the FLASH memory against possible unwanted operation) */
-  FLASH_Lock(); 
+void print_data(uint32_t uwStartAddress, uint32_t uwEndAddress)
+{
+  uint32_t uwAddress = uwStartAddress;
+  int newline_count = 1;
 
-
-  /* Check if the programmed data is OK ***************************************/
-  /*  MemoryProgramStatus = 0: data programmed correctly
-      MemoryProgramStatus != 0: number of words not programmed correctly */
-  uwAddress = FLASH_USER_START_ADDR;
-  uwMemoryProgramStatus = 0;
-  
-  while (uwAddress < FLASH_USER_END_ADDR)
+  while (uwAddress < uwEndAddress)
   {
     uwData32 = *(__IO uint32_t*)uwAddress;
-
-    if (uwData32 != DATA_32)
-    {
-      uwMemoryProgramStatus++;  
-    }
+    USART1_putsHex(uwData32);
+    if(newline_count %= 4)
+      USART1_puts(" ");
+    else
+      USART1_puts("\r\n");
 
     uwAddress = uwAddress + 4;
-  }  
- 
-  /* Check Data correctness */
-  if(uwMemoryProgramStatus)
-  {
-    /* KO */
-    /* Turn on LD4 */
-    STM_EVAL_LEDOn(LED4);
+    newline_count ++;
   }
-  else
-  {
-    /* OK */
-    /* Turn on LD3 */
-    STM_EVAL_LEDOn(LED3);    
-  }
+  USART1_puts("\r\n\r\n");
+}
+
+int main(void)
+{
+  /*!< At this stage the microcontroller clock setting is already configured, 
+       this is done through SystemInit() function which is called from startup
+       files (startup_stm32f429_439xx.s) before to branch to application main. 
+       To reconfigure the default setting of SystemInit() function, refer to
+       system_stm32f4xx.c file
+     */
+  
+  SetSysClockTo84();
+
+  // Initailize usart
+  RCC_Configuration();
+  GPIO_Configuration();
+  USART1_Configuration();
+
+  /* Initialize LEDs onSTM32F429I-DISCO */
+  STM_EVAL_LEDInit(LED3);
+  STM_EVAL_LEDInit(LED4);
+
+  USART1_puts("flash demo start\r\n");
+  
+
+  USART1_puts("Flash unlock\r\n");
+  FLASH_Unlock();
+  
+  /* Clear pending flags (if any) */  
+  FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_OPERR | FLASH_FLAG_WRPERR | 
+                  FLASH_FLAG_PGAERR | FLASH_FLAG_PGPERR|FLASH_FLAG_PGSERR); 
+  /* disable write protection */
+  FLASH_OB_Unlock();
+  FLASH_OB_WRP1Config(OB_WRP_Sector_All, DISABLE);
+  if (FLASH_OB_Launch() != FLASH_COMPLETE)
+    USART1_puts("Disable write protection error\r\n");
+  FLASH_OB_Lock();
+
+
+  USART1_puts("Erase sector 12 13\r\n");
+  erase_data(GetSector(ADDR_FLASH_SECTOR_12), GetSector(ADDR_FLASH_SECTOR_13) );
+  USART1_puts("Sector 12 (first 80 bytes)\r\n");
+  print_data(ADDR_FLASH_SECTOR_12, ADDR_FLASH_SECTOR_12 + 80);
+
+  USART1_puts("Sector 13 (first 80 bytes)\r\n");
+  print_data(ADDR_FLASH_SECTOR_13, ADDR_FLASH_SECTOR_13 + 80);
+
+  USART1_puts("Program 0x32F429DC to sector 12\r\n");
+  program_data(ADDR_FLASH_SECTOR_12, ADDR_FLASH_SECTOR_13);
+  USART1_puts("Sector 12 (first 80 bytes)\r\n");
+  print_data(ADDR_FLASH_SECTOR_12, ADDR_FLASH_SECTOR_12 + 80);
+
+  USART1_puts("Enable write protection to sector 13\r\n");
+  FLASH_OB_Unlock();
+  FLASH_OB_WRP1Config(OB_WRP_Sector_13, ENABLE);
+  if (FLASH_OB_Launch() != FLASH_COMPLETE)
+    USART1_puts("Write protection error...\r\n");
+  FLASH_OB_Lock();
+
+  USART1_puts("Attempt to program 0x32F429DC to sector 13\r\n");
+  program_data(ADDR_FLASH_SECTOR_13, ADDR_FLASH_SECTOR_14);
+  USART1_puts("sector 13 (first 80 bytes)\r\n");
+  print_data(ADDR_FLASH_SECTOR_13, ADDR_FLASH_SECTOR_13 + 80);
+
+  USART1_puts("Flash lock\r\n");
+  FLASH_Lock(); 
 
   while (1)
   {
   }
 }
 
-/**
-  * @brief  Gets the sector of a given address
-  * @param  None
-  * @retval The sector of a given address
-  */
 static uint32_t GetSector(uint32_t Address)
 {
   uint32_t sector = 0;
